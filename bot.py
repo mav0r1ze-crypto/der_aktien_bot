@@ -4,7 +4,7 @@ import requests
 import datetime
 import pandas as pd
 
-# 1. KONFIGURATION (Laden der GitHub Secrets)
+# 1. KONFIGURATION
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -15,8 +15,8 @@ mein_depot = {
     "TLRY": 11, "LIN": 10
 }
 
-# Watchlist für Empfehlungen
-kandidaten_pool = ["MSFT", "AAPL", "GOOGL", "AMZN", "TSLA", "META", "ALV.DE", "SIE.DE"]
+# EXTRA: Aktien im Blick (Allianz & Siemens Energy fest gesetzt)
+aktien_im_blick = ["ALV.DE", "ENR.DE", "MSFT", "AAPL"] 
 
 def get_stock_data(ticker):
     """Holt Preis, RSI und News für ein Symbol."""
@@ -33,86 +33,71 @@ def get_stock_data(ticker):
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs))
         
-        current_rsi = rsi.iloc[-1]
-        current_price = hist['Close'].iloc[-1]
-        
         return {
             "name": stock.info.get('shortName', ticker),
-            "price": current_price,
-            "rsi": current_rsi,
+            "price": hist['Close'].iloc[-1],
+            "rsi": rsi.iloc[-1],
             "currency": stock.info.get('currency', 'EUR'),
-            "news": stock.news[:1]  # Die aktuellste Nachricht
+            "news": stock.news[:1]
         }
     except Exception as e:
         print(f"Fehler bei {ticker}: {e}")
         return None
 
 def send_telegram_msg(text):
-    """Sendet die Nachricht an deinen Telegram Bot."""
-    if not TOKEN or not CHAT_ID:
-        print("Fehler: TOKEN oder CHAT_ID nicht gesetzt!")
-        return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": False}
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
     requests.post(url, json=payload)
 
 def main():
     heute = datetime.datetime.now()
-    wochentag = heute.weekday()  # 0=Montag, 6=Sonntag
+    wochentag = heute.weekday()
     
-    bericht = f"🤖 *Depot-Check {heute.strftime('%d.%m.%Y')}*\n"
-    bericht += "------------------------------------------\n\n"
-    
+    # --- SEKTION 1: DEPOT ANALYSE ---
+    depot_bericht = ""
     alarme = ""
-    wochen_liste = ""
-    
-    # 2. DEPOT ANALYSIEREN
     for ticker in mein_depot:
         data = get_stock_data(ticker)
         if data:
-            rsi = data['rsi']
-            name = data['name']
+            rsi, name = data['rsi'], data['name']
             preis = f"{data['price']:.2f} {data['currency']}"
-            
-            # Alarme definieren
-            status_emoji = ""
-            if rsi > 70:
-                status_emoji = "🔴 *ÜBERHITZT (Verkauf prüfen)*"
-                alarme += f"{status_emoji}\n*{name}*\nPreis: {preis}\nRSI: {rsi:.1f}\n"
-                if data['news']:
-                    alarme += f"📰 News: [{data['news'][0]['title']}]({data['news'][0]['link']})\n\n"
-            elif rsi < 30:
-                status_emoji = "🟢 *GÜNSTIG (Kauf-Chance)*"
-                alarme += f"{status_emoji}\n*{name}*\nPreis: {preis}\nRSI: {rsi:.1f}\n\n"
-            
-            # Für die Sonntags-Übersicht sammeln
             trend = "📈" if rsi > 50 else "📉"
-            wochen_liste += f"{trend} {name[:12]}: {preis} (RSI: {rsi:.1f})\n"
+            depot_bericht += f"{trend} {name[:12]}: {preis} (RSI: {rsi:.1f})\n"
+            
+            if rsi > 70:
+                alarme += f"🔴 *ÜBERHITZT:* {name} ({preis})\n"
+            elif rsi < 30:
+                alarme += f"🟢 *KAUFCHANCE:* {name} ({preis})\n"
 
-    # 3. EMPFEHLUNGEN (Falls gewünscht)
-    empfehlungen = ""
-    if rsi > 70: # Nur wenn wir verkaufen könnten, suchen wir Ersatz
-        empfehlungen = "\n💡 *Alternative Kauf-Kandidaten:*\n"
-        for cand in kandidaten_pool[:5]:
-            c_data = get_stock_data(cand)
-            if c_data and c_data['rsi'] < 40:
-                empfehlungen += f"• {c_data['name']} (RSI: {c_data['rsi']:.1f})\n"
+    # --- SEKTION 2: AKTIEN IM BLICK (Allianz, Siemens Energy etc.) ---
+    blick_bericht = ""
+    for ticker in aktien_im_blick:
+        data = get_stock_data(ticker)
+        if data:
+            rsi, name = data['rsi'], data['name']
+            preis = f"{data['price']:.2f} {data['currency']}"
+            # Spezielle Formatierung für deine Favoriten
+            status = "🔥" if rsi > 65 else "🧊" if rsi < 35 else "➡️"
+            blick_bericht += f"{status} *{name}*: {preis} (RSI: {rsi:.1f})\n"
 
-    # 4. VERSAND-LOGIK
-    # Sonntag (6): Immer den vollen Bericht
-    if wochentag == 6:
-        finaler_text = bericht + "📊 *Wochen-Zusammenfassung:*\n" + wochen_liste
-        if alarme:
-            finaler_text += "\n⚠️ *Aktuelle Signale:*\n" + alarme
-        send_telegram_msg(finaler_text)
+    # --- NACHRICHT ZUSAMMENBAUEN ---
+    header = f"🤖 *Börsen-Update {heute.strftime('%d.%m.%Y')}*\n"
+    header += "------------------------------------------\n"
     
-    # Unter der Woche: Nur bei Alarmen senden
+    finaler_text = header
+    
+    if alarme:
+        finaler_text += f"\n⚠️ *DEPOT-SIGNALE:*\n{alarme}\n"
+    
+    finaler_text += f"\n💰 *DEIN DEPOT:*\n{depot_bericht}"
+    finaler_text += f"\n👀 *AKTIEN IM BLICK:*\n{blick_bericht}"
+
+    # VERSAND-LOGIK: 
+    # Sonntags immer, unter der Woche nur wenn Alarme existieren ODER es ein Favorit-Update gibt
+    if wochentag == 6 or alarme or blick_bericht:
+        send_telegram_msg(finaler_text)
     else:
-        if alarme:
-            finaler_text = bericht + "⚠️ *AKTION ERFORDERLICH:*\n\n" + alarme + empfehlungen
-            send_telegram_msg(finaler_text)
-        else:
-            print("Keine Alarme, keine Nachricht gesendet.")
+        print("Keine relevanten Änderungen heute.")
 
 if __name__ == "__main__":
     main()
